@@ -17,7 +17,6 @@ from rest_framework import filters
 from rest_framework.response import Response
 
 from courseware import module_render
-from course_blocks.api import get_course_blocks
 from courseware.model_data import FieldDataCache
 from django_comment_common.models import Role, FORUM_ROLE_MODERATOR
 from gradebook.models import StudentGradebook
@@ -52,7 +51,6 @@ from student.roles import (
     CourseStaffRole,
     CourseAssistantRole,
     UserBasedRole,
-    get_aggregate_exclusion_user_ids,
 )
 from util.bad_request_rate_limiter import BadRequestRateLimiter
 from util.password_policy_validators import (
@@ -73,6 +71,10 @@ from edx_solutions_api_integration.utils import (
     extract_data_params,
     str2bool,
     css_param_to_list,
+    get_aggregate_exclusion_user_ids,
+    cache_course_data,
+    cache_course_user_data,
+    get_cached_data,
 )
 from edx_solutions_projects.serializers import BasicWorkgroupSerializer
 from edx_solutions_api_integration.users.serializers import (
@@ -1355,21 +1357,27 @@ class UsersSocialMetrics(SecureListAPIView):
         except ObjectDoesNotExist:
             return Response({}, status.HTTP_404_NOT_FOUND)
 
-        course_key = get_course_key(course_id)
-        exclude_users = get_aggregate_exclusion_user_ids(course_key)
+        cached_social_data = get_cached_data('social', course_id, user_id)
+        if not cached_social_data:
+            course_key = get_course_key(course_id)
+            exclude_users = get_aggregate_exclusion_user_ids(course_key)
 
-        try:
-            social_engagement = StudentSocialEngagementScore.objects.get(course_id__exact=course_key, user__id=user_id)
-            social_engagement_score = social_engagement.score
-        except StudentSocialEngagementScore.DoesNotExist:
-            social_engagement_score = 0
+            try:
+                social_engagement = StudentSocialEngagementScore.objects.get(course_id__exact=course_key, user__id=user_id)
+                social_engagement_score = social_engagement.score
+            except StudentSocialEngagementScore.DoesNotExist:
+                social_engagement_score = 0
 
-        course_avg, __ = StudentSocialEngagementScore.generate_leaderboard(
-            course_key,
-            count=0,
-            exclude_users=exclude_users
-        )
-        data = {'course_avg': course_avg, 'score': social_engagement_score}
+            course_avg, __ = StudentSocialEngagementScore.generate_leaderboard(
+                course_key,
+                count=0,
+                exclude_users=exclude_users
+            )
+            data = {'course_avg': course_avg, 'score': social_engagement_score}
+            cache_course_data('social', course_id, {'course_avg': course_avg})
+            cache_course_user_data('social', course_id, user_id, {'score': social_engagement_score})
+        else:
+            data = cached_social_data
         http_status = status.HTTP_200_OK
         if include_stats:
             # load the course so that we can see when the course end date is
